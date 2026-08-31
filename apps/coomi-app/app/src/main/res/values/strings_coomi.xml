@@ -2,6 +2,11 @@
 <!-- Coomi UI 文案（新版设计） -->
 <resources>
 
+    <!-- ===== 无障碍自动化 ===== -->
+    <string name="coomi_accessibility_description">允许 CoomiGONG 通过无障碍能力模拟点击、滑动和系统手势，用于自动化操作手机界面（如备份/导入、安装 APK）。服务只响应 CoomiGONG 内部发起的明确指令，不采集任何数据。</string>
+    <string name="coomi_dash_accessibility">无障碍自动化</string>
+    <string name="coomi_dash_accessibility_desc">在系统设置中开启 CoomiDev 的无障碍服务，可让 Agent 模拟点击与滑动</string>
+
     <!-- ===== 启动引导 ===== -->
     <string name="coomi_brand">Coomi</string>
     <string name="coomi_launcher_title">Coomi</string>

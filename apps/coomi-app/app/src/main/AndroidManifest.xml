@@ -165,6 +165,21 @@
             android:name="app.coomi.CoomiService"
             android:exported="false" />
 
+        <!-- Opt-in automation channel (Settings > Accessibility > CoomiGONG).
+             Only acts on explicit commands; enables tap/swipe/global gestures. -->
+        <service
+            android:name="app.coomi.CoomiAccessibilityService"
+            android:exported="false"
+            android:label="@string/coomi_accessibility_description"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/coomi_accessibility_config" />
+        </service>
+
         <service
             android:name="app.coomi.CoomiEngineMonitor"
             android:exported="false"

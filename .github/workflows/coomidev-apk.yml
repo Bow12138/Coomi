@@ -26,6 +26,7 @@ concurrency:
 
 env:
   COOMI_DEV_BUILD: '1'
+  COOMI_APP_NAME_OVERRIDE: 'CoomiGONG'
   COMPILE_SDK: '36'
   NDK_VERSION: '27.0.12077973'
   JAVA_VERSION: '17'
@@ -161,20 +162,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'CoomiDev-*.apk' | sort | tail -n 1)"
+          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'CoomiGONG-*.apk' | sort | tail -n 1)"
           echo "APK=$APK"
           test -n "$APK" && test -s "$APK"
           BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
           "$BT/aapt2" dump badging "$APK" > badging.txt
           grep "package: name='com.coomidev.android'" badging.txt
-          grep -E "application-label(-zh)?:'CoomiDev'" badging.txt
+          grep -E "application-label(-zh)?:'CoomiGONG'" badging.txt
           grep "native-code: 'arm64-v8a'" badging.txt
 
       - name: Verify APK signature
         shell: bash
         run: |
           set -euo pipefail
-          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'CoomiDev-*.apk' | sort | tail -n 1)"
+          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'CoomiGONG-*.apk' | sort | tail -n 1)"
           BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
           "$BT/apksigner" verify --verbose "$APK"
 
