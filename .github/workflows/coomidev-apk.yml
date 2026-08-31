@@ -149,7 +149,11 @@ jobs:
           # set COOMI_NDK_TOOLCHAIN_DIR here (that is only for ARM64 Linux hosts).
           # gradlew is committed without the executable bit (git mode 100644), so ensure it is runnable.
           chmod +x gradlew
-          ./gradlew --no-daemon --max-workers=2 :app:clean :app:assembleRelease
+          # The .S bootstrap incbin is resolved relative to the ndk-build working
+          # directory (the app module root). Keep a copy there as well as the
+          # git-tracked src/main/cpp one so the assembler can always find it.
+          cp apps/coomi-app/app/src/main/cpp/bootstrap-aarch64.zip apps/coomi-app/app/bootstrap-aarch64.zip
+          ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
 
       - name: Verify APK identity
         shell: bash
