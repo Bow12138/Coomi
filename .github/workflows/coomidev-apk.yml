@@ -1,0 +1,179 @@
+name: CoomiDev APK
+
+# Build the isolated CoomiDev APK with COOMI_DEV_BUILD=1.
+# The APK is packaged from the fork's feature branch and uploaded as an artifact.
+# Signing uses a per-run generated debug keystore (preview build, not a release
+# identity). Do NOT put signing passwords or private keys in this file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Source ref (branch or tag) to build'
+        required: true
+        default: 'codex/custom-coomidev-actions'
+        type: string
+  push:
+    branches:
+      - 'codex/custom-coomidev-actions'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coomidev-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COOMI_DEV_BUILD: '1'
+  COMPILE_SDK: '36'
+  NDK_VERSION: '27.0.12077973'
+  JAVA_VERSION: '17'
+  NODE_VERSION: '22'
+  RUST_VERSION: '1.95.0'
+  RUNTIME_V2_TAG: 'runtime-v2-debian-bookworm-20260824'
+  PROOT_HOST_TAG: 'runtime-v2-debian-bookworm-20260803'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android
+          components: clippy, rustfmt
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ github.sha }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Setup Android SDK commandline tools
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+          cmdline-tools-version: 'latest'
+
+      - name: Install Android platform, build-tools and NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+
+      - name: Build frontend (Vue)
+        shell: bash
+        run: |
+          cd apps/web
+          npm ci
+          npm run type-check
+          npm run build
+
+      - name: Fetch Runtime V2 assets (pinned, checksum verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-v2-dist
+          BASE="https://github.com/TensorHub-ORG/Coomi/releases/download"
+          curl -fsSL -o runtime-v2-dist/proot-host-arm64.tar.gz \
+            "$BASE/$PROOT_HOST_TAG/proot-host-arm64.tar.gz"
+          echo "77eb98f3d528bb83db0bba6fec703f577724dd7fefcaf8cafc34607eaac60f0e  runtime-v2-dist/proot-host-arm64.tar.gz" | sha256sum -c -
+          curl -fsSL -o runtime-v2-dist/debian-bookworm-arm64.tar.gz \
+            "$BASE/$RUNTIME_V2_TAG/debian-bookworm-arm64.tar.gz"
+          echo "43ebcee7855f4c15e90514ddb111bd0830acbf9602a7d0e19594aa299bbe8105  runtime-v2-dist/debian-bookworm-arm64.tar.gz" | sha256sum -c -
+
+      - name: Generate per-run debug keystore + local.properties
+        shell: bash
+        run: |
+          set -euo pipefail
+          STORE_PASS="$(openssl rand -hex 16)"
+          KEY_PASS="${STORE_PASS}"
+          STORE_FILE="$GITHUB_WORKSPACE/apps/coomi-app/app/testkey_untrusted.jks"
+          # build.gradle hardcodes storeFile testkey_untrusted.jks; generate it fresh
+          # so the store/key passwords always match the per-run values below.
+          rm -f "$STORE_FILE"
+          keytool -genkeypair -v \
+            -keystore "$STORE_FILE" \
+            -alias alias \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$STORE_PASS" -keypass "$KEY_PASS" \
+            -dname "CN=CoomiDev Preview, OU=Dev, O=Coomi, L=Local, S=Local, C=CN"
+          cat > local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          coomi.signing.storePassword=$STORE_PASS
+          coomi.signing.keyPassword=$KEY_PASS
+          EOF
+
+      - name: Build CoomiDev APK (frontend + Rust + Android)
+        shell: bash
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME}"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          export COOMI_NDK_HOME="$ANDROID_NDK_HOME"
+          # On the ubuntu x86_64 runner the official NDK provides a linux-x86_64
+          # toolchain that can cross-compile to aarch64-linux-android, so do NOT
+          # set COOMI_NDK_TOOLCHAIN_DIR here (that is only for ARM64 Linux hosts).
+          ./gradlew --no-daemon --max-workers=2 :app:clean :app:assembleRelease
+
+      - name: Verify APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'CoomiDev-*.apk' | sort | tail -n 1)"
+          echo "APK=$APK"
+          test -n "$APK" && test -s "$APK"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          "$BT/aapt2" dump badging "$APK" > badging.txt
+          grep "package: name='com.coomidev.android'" badging.txt
+          grep -E "application-label(-zh)?:'CoomiDev'" badging.txt
+          grep "native-code: 'arm64-v8a'" badging.txt
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'CoomiDev-*.apk' | sort | tail -n 1)"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          "$BT/apksigner" verify --verbose "$APK"
+
+      - name: Upload CoomiDev APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coomidev-apk
+          path: apps/coomi-app/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
