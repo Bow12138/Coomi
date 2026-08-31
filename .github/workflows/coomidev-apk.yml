@@ -147,6 +147,8 @@ jobs:
           # On the ubuntu x86_64 runner the official NDK provides a linux-x86_64
           # toolchain that can cross-compile to aarch64-linux-android, so do NOT
           # set COOMI_NDK_TOOLCHAIN_DIR here (that is only for ARM64 Linux hosts).
+          # gradlew is committed without the executable bit (git mode 100644), so ensure it is runnable.
+          chmod +x gradlew
           ./gradlew --no-daemon --max-workers=2 :app:clean :app:assembleRelease
 
       - name: Verify APK identity
