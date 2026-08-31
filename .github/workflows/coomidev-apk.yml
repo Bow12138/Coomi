@@ -116,26 +116,28 @@ jobs:
             "$BASE/$RUNTIME_V2_TAG/debian-bookworm-arm64.tar.gz"
           echo "43ebcee7855f4c15e90514ddb111bd0830acbf9602a7d0e19594aa299bbe8105  runtime-v2-dist/debian-bookworm-arm64.tar.gz" | sha256sum -c -
 
-      - name: Generate per-run debug keystore + local.properties
+      - name: Restore official signing keystore + local.properties
         shell: bash
+        env:
+          COOMI_SIGNING_KEYSTORE: ${{ secrets.COOMI_SIGNING_KEYSTORE }}
+          COOMI_SIGNING_STORE_PASS: ${{ secrets.COOMI_SIGNING_STORE_PASS }}
+          COOMI_SIGNING_KEY_PASS: ${{ secrets.COOMI_SIGNING_KEY_PASS }}
         run: |
           set -euo pipefail
-          STORE_PASS="$(openssl rand -hex 16)"
-          KEY_PASS="${STORE_PASS}"
           STORE_FILE="$GITHUB_WORKSPACE/apps/coomi-app/app/testkey_untrusted.jks"
-          # build.gradle hardcodes storeFile testkey_untrusted.jks; generate it fresh
-          # so the store/key passwords always match the per-run values below.
-          rm -f "$STORE_FILE"
-          keytool -genkeypair -v \
-            -keystore "$STORE_FILE" \
-            -alias alias \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass "$STORE_PASS" -keypass "$KEY_PASS" \
-            -dname "CN=CoomiDev Preview, OU=Dev, O=Coomi, L=Local, S=Local, C=CN"
+          # build.gradle hardcodes storeFile testkey_untrusted.jks. Restore the
+          # official release keystore from the repository secret and wire the
+          # signing passwords through local.properties. The keystore and
+          # passwords are never written to the repository or printed.
+          test -n "$COOMI_SIGNING_KEYSTORE" || { echo "Missing secret COOMI_SIGNING_KEYSTORE" >&2; exit 1; }
+          test -n "$COOMI_SIGNING_STORE_PASS" || { echo "Missing secret COOMI_SIGNING_STORE_PASS" >&2; exit 1; }
+          test -n "$COOMI_SIGNING_KEY_PASS" || { echo "Missing secret COOMI_SIGNING_KEY_PASS" >&2; exit 1; }
+          printf '%s' "$COOMI_SIGNING_KEYSTORE" | base64 -d > "$STORE_FILE"
+          chmod 600 "$STORE_FILE"
           cat > local.properties <<EOF
           sdk.dir=$ANDROID_HOME
-          coomi.signing.storePassword=$STORE_PASS
-          coomi.signing.keyPassword=$KEY_PASS
+          coomi.signing.storePassword=$COOMI_SIGNING_STORE_PASS
+          coomi.signing.keyPassword=$COOMI_SIGNING_KEY_PASS
           EOF
 
       - name: Build CoomiDev APK (frontend + Rust + Android)
