@@ -185,9 +185,10 @@ public final class CoomiVoiceManager {
     /** Reads a reply out loud. No-op when TTS is not ready. */
     public void speak(String text) {
         if (text == null || text.isEmpty()) return;
-        if (!ttsReady) {
+        if (tts == null) {
             initTts();
-            mainHandler.postDelayed(() -> speakNow(text), 600);
+            // Wait for async TTS init (up to ~2s), then try to speak.
+            mainHandler.postDelayed(() -> speakNow(text), 800);
             return;
         }
         speakNow(text);
@@ -200,7 +201,10 @@ public final class CoomiVoiceManager {
     }
 
     private void speakNow(String text) {
-        if (tts == null || !ttsReady) return;
+        if (tts == null || !ttsReady) {
+            deliver("tts_error", "tts_not_ready");
+            return;
+        }
         String utteranceId = "coomi-" + System.currentTimeMillis();
         int result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
         if (result == TextToSpeech.ERROR) {
@@ -210,41 +214,84 @@ public final class CoomiVoiceManager {
 
     private void initTts() {
         if (tts != null) return;
-        tts = new TextToSpeech(context, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                int langResult = tts.setLanguage(Locale.getDefault());
-                ttsReady = langResult != TextToSpeech.LANG_MISSING_DATA
-                    && langResult != TextToSpeech.LANG_NOT_SUPPORTED;
-                if (!ttsReady) {
-                    // Fall back to system default locale for the engine.
-                    ttsReady = tts.setLanguage(Locale.US) != TextToSpeech.LANG_MISSING_DATA
-                        && tts.setLanguage(Locale.US) != TextToSpeech.LANG_NOT_SUPPORTED;
-                }
-                if (ttsReady) {
-                    tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                        @Override
-                        public void onStart(String utteranceId) {
-                            deliver("tts_start", "");
-                        }
+        // Pick the best available engine explicitly. OPPO ships an offline
+        // Breeno TTS engine; prefer it, otherwise use the system default.
+        String engine = pickEngine();
+        if (engine != null) {
+            tts = new TextToSpeech(context, ttsInitListener, engine);
+        } else {
+            tts = new TextToSpeech(context, ttsInitListener);
+        }
+    }
 
-                        @Override
-                        public void onDone(String utteranceId) {
-                            deliver("tts_done", "");
-                        }
-
-                        @Override
-                        public void onError(String utteranceId) {
-                            deliver("tts_error", "utterance_error");
-                        }
-                    });
-                    deliver("tts_ready", "");
-                } else {
-                    deliver("tts_error", "no_language");
+    private final TextToSpeech.OnInitListener ttsInitListener = status -> {
+        if (status != TextToSpeech.SUCCESS) {
+            ttsReady = false;
+            deliver("tts_error", "init_failed");
+            return;
+        }
+        // Try device locale first, then Chinese, then any available voice.
+        boolean ok = trySetLanguage(Locale.getDefault());
+        if (!ok) ok = trySetLanguage(Locale.SIMPLIFIED_CHINESE);
+        if (!ok) ok = trySetLanguage(Locale.CHINA);
+        if (!ok) ok = trySetLanguage(Locale.US);
+        ttsReady = ok;
+        if (ttsReady) {
+            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override
+                public void onStart(String utteranceId) {
+                    deliver("tts_start", "");
                 }
-            } else {
-                deliver("tts_error", "init_failed");
+
+                @Override
+                public void onDone(String utteranceId) {
+                    deliver("tts_done", "");
+                }
+
+                @Override
+                public void onError(String utteranceId) {
+                    deliver("tts_error", "utterance_error");
+                }
+            });
+            deliver("tts_ready", "");
+        } else {
+            deliver("tts_error", "no_language");
+        }
+    };
+
+    private boolean trySetLanguage(Locale locale) {
+        if (locale == null) return false;
+        try {
+            int result = tts.setLanguage(locale);
+            return result != TextToSpeech.LANG_MISSING_DATA
+                && result != TextToSpeech.LANG_NOT_SUPPORTED;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /** Pick a TTS engine: prefer OPPO/Breeno offline engine, else system default. */
+    private String pickEngine() {
+        try {
+            java.util.List<TextToSpeech.EngineInfo> engines =
+                TextToSpeech.getEngines(context);
+            if (engines == null || engines.isEmpty()) return null;
+            // 1) OPPO / Breeno offline engine
+            for (TextToSpeech.EngineInfo info : engines) {
+                if (info == null || info.name == null) continue;
+                String name = info.name.toLowerCase(Locale.US);
+                if (name.contains("oplus") || name.contains("breeno")
+                    || name.contains("coloros") || name.contains("ttsaccessibility")) {
+                    return info.name;
+                }
             }
-        });
+            // 2) any engine with a non-empty package name
+            for (TextToSpeech.EngineInfo info : engines) {
+                if (info != null && info.name != null && !info.name.isEmpty()) return info.name;
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     public void release() {
