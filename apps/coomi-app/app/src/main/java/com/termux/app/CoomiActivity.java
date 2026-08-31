@@ -95,6 +95,7 @@ public class CoomiActivity extends Activity {
     private CoomiService mCoomiService;
     private boolean mBound;
     private boolean mStartRequested;
+    private app.coomi.CoomiVoiceManager mVoiceManager;
     private boolean mPageLoaded;
     private int mAutomaticRecoveryAttempts;
     private String mPendingExportPath;
@@ -140,6 +141,10 @@ public class CoomiActivity extends Activity {
         mRetryButton = findViewById(R.id.btn_coomi_retry);
         mRetryButton.setOnClickListener(v -> retryStart());
         configureWebView();
+        mVoiceManager = new app.coomi.CoomiVoiceManager(this);
+        app.coomi.CoomiVoiceManager.setJsCallback(js -> runOnUiThread(() -> {
+            if (mWebView != null) mWebView.evaluateJavascript(js, null);
+        }));
 
         showLoading(getString(R.string.coomi_starting));
 
@@ -474,6 +479,47 @@ public class CoomiActivity extends Activity {
     private final class AndroidBridge {
         @JavascriptInterface
         public void openDashboard() { runOnUiThread(CoomiActivity.this::openDashboard); }
+
+        // ==================== 语音：识别 / 朗读 ====================
+
+        /** 是否已授予麦克风权限（前端据此显示麦克风按钮状态）。 */
+        @JavascriptInterface
+        public boolean hasMicPermission() {
+            return mVoiceManager != null && mVoiceManager.hasRecordPermission();
+        }
+
+        /** 申请麦克风权限（首次使用语音时调用，系统弹窗）。 */
+        @JavascriptInterface
+        public void requestMicPermission() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                runOnUiThread(() -> requestPermissions(
+                    new String[]{android.Manifest.permission.RECORD_AUDIO}, 2401));
+            }
+        }
+
+        /** 开始一次语音识别。结果通过 window.__coomiVoiceResult 回调。 */
+        @JavascriptInterface
+        public void startVoiceInput() {
+            if (mVoiceManager != null) mVoiceManager.startRecognition();
+        }
+
+        /** 停止当前识别（识别到结果后自动结束，一般无需手动调用）。 */
+        @JavascriptInterface
+        public void stopVoiceInput() {
+            if (mVoiceManager != null) mVoiceManager.stopRecognition();
+        }
+
+        /** 朗读一段文本（Coomi 回复）。 */
+        @JavascriptInterface
+        public void speak(String text) {
+            if (mVoiceManager != null) mVoiceManager.speak(text);
+        }
+
+        /** 停止当前朗读。 */
+        @JavascriptInterface
+        public void stopSpeaking() {
+            if (mVoiceManager != null) mVoiceManager.stopSpeaking();
+        }
 
         /** 前端上报任务状态（running/done），更新通知栏「任务执行中/已完成」。 */
         @JavascriptInterface
@@ -1011,6 +1057,7 @@ public class CoomiActivity extends Activity {
             mWebView.destroy();
             mWebView = null;
         }
+        if (mVoiceManager != null) { mVoiceManager.release(); mVoiceManager = null; }
         super.onDestroy();
     }
 }

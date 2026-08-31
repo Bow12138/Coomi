@@ -12,6 +12,7 @@ import type { AssistantMessage, UserMessage } from '@/stores/viewModel'
 import { useSessionStore } from '@/stores/session'
 import { renderMarkdown } from '@/utils/markdown'
 import CoomiIcon from './CoomiIcon.vue'
+import { readAloud } from '@/stores/voice'
 import FileInline from './FileInline.vue'
 
 const props = defineProps<{ msg: AssistantMessage | UserMessage }>()
@@ -133,6 +134,30 @@ async function copyAll() {
   copied.value = true
   setTimeout(() => { copied.value = false }, 1400)
 }
+
+// ── 朗读回复（只读助手回复；自动朗读默认关闭，可手动逐条朗读）──
+const speaking = ref(false)
+
+function speakNow(text: string) {
+  if (!window.CoomiAndroid?.speak) return
+  window.CoomiAndroid.stopSpeaking?.()
+  window.CoomiAndroid.speak(text)
+  speaking.value = true
+}
+
+function toggleSpeak() {
+  if (speaking.value) {
+    speaking.value = false
+    window.CoomiAndroid?.stopSpeaking?.()
+    return
+  }
+  speakNow(props.msg.content)
+}
+
+// 流式回复结束且自动朗读开启时，自动朗读该条回复。
+watch(streaming, (v) => {
+  if (!v && readAloud.value && props.msg.kind === 'assistant') speakNow(props.msg.content)
+})
 </script>
 
 <template>
@@ -161,6 +186,10 @@ async function copyAll() {
       <button class="act" @click="copyAll">
         <CoomiIcon :name="copied ? 'check' : 'copy'" :size="15" />
         <span>{{ copied ? '已复制' : '复制' }}</span>
+      </button>
+      <button class="act" @click="toggleSpeak">
+        <CoomiIcon :name="speaking ? 'stop' : 'volume'" :size="15" />
+        <span>{{ speaking ? '停止' : '朗读' }}</span>
       </button>
       <button v-if="isLastAssistant" class="act" @click="undoAssistant">
         <CoomiIcon name="arrowLeft" :size="15" />

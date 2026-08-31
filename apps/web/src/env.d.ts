@@ -30,6 +30,18 @@ interface Window {
     getAppVersionCode?(): number
     /** 下载并安装更新 APK（url 为 APK 直链，version 用于文件名/提示）。 */
     installApk?(url: string, version: string): void
+      /** 是否已授予录音权限。 */
+      hasMicPermission?(): boolean
+      /** 请求录音权限。 */
+      requestMicPermission?(): void
+      /** 开始语音识别（结果经 window.__coomiVoiceResult 回调）。 */
+      startVoiceInput?(): void
+      /** 停止当前语音识别。 */
+      stopVoiceInput?(): void
+      /** 朗读文本（TextToSpeech）。 */
+      speak?(text: string): void
+      /** 停止朗读。 */
+      stopSpeaking?(): void
   }
 }
 

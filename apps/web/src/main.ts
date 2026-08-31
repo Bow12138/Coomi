@@ -145,4 +145,17 @@ function initTheme() {
 
 initTheme()
 installSystemBackHandler(router)
+
+// ==================== 语音桥 ====================
+// Android 侧通过 window.__coomiVoiceResult(json) 回调识别/朗读状态；
+// 这里统一转成 DOM 事件 coomi:voice-result 供组件监听。
+;(window as unknown as Record<string, unknown>).__coomiVoiceResult ??= (json: string) => {
+  try {
+    const detail = JSON.parse(json ?? '{}')
+    window.dispatchEvent(new CustomEvent('coomi:voice-result', { detail }))
+  } catch {
+    /* 忽略非法负载 */
+  }
+}
+
 createApp(App).use(createPinia()).use(router).mount('#app')
