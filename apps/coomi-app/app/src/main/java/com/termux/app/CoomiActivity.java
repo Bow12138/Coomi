@@ -21,6 +21,7 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Base64;
+import android.util.Log;
 import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.content.res.Configuration;
@@ -544,11 +545,21 @@ public class CoomiActivity extends Activity {
             return mShizukuExec.exec(command);
         }
 
-        /** 截图到本地并返回路径（经 adb screencap）。 */
+        /** 截图到本地并返回路径（Shizuku screencap 优先，无障碍 takeScreenshot 降级）。 */
         @JavascriptInterface
         public String screenCapture() {
-            if (mShizukuExec == null) return "{\"ok\":false,\"error\":\"unavailable\"}";
-            return mShizukuExec.screenCapture();
+            if (mShizukuExec != null && mShizukuExec.isAvailable()) {
+                String r = mShizukuExec.screenCapture();
+                try {
+                    JSONObject j = new JSONObject(r);
+                    if (j.optBoolean("ok")) return r;
+                } catch (Exception ignored) {
+                }
+            }
+            // 降级：无障碍 takeScreenshot（API 30+）。
+            String dir = getExternalFilesDir(null) != null
+                ? getExternalFilesDir(null).getAbsolutePath() : getFilesDir().getAbsolutePath();
+            return app.coomi.CoomiAccessibilityService.takeScreenshot(dir);
         }
 
         /** 无障碍服务是否已启用。 */
@@ -577,7 +588,7 @@ public class CoomiActivity extends Activity {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(intent);
             } catch (Exception e) {
-                Log.e(TAG, "openAccessibilitySettings failed", e);
+                Log.e(LOG_TAG, "openAccessibilitySettings failed", e);
             }
         }
 

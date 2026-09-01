@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  CoomiDev accessibility service configuration.
+  Anna accessibility service configuration.
 
   Capabilities:
   - performGlobalAction: back / home / recents / notifications
   - dispatchGesture:      tap, swipe, long-press at arbitrary coordinates
   - node introspection:   read the active window hierarchy (dump)
+  - takeScreenshot:       capture the current screen (API 30+, fallback path)
   - ACTION_ACCESSIBILITY broadcast: receives commands from the Coomi engine
     or a shell (am broadcast) so automation can be driven externally.
 
   The service is opt-in: the user must enable it in
-  Settings > Accessibility > CoomiDev. It does not request any data
+  Settings > Accessibility > Anna. It does not request any data
   collection and only acts on explicit commands.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
@@ -19,5 +20,6 @@
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
+    android:canTakeScreenshot="true"
     android:description="@string/coomi_accessibility_description"
     android:notificationTimeout="100" />

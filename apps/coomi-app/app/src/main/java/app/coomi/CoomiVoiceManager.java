@@ -383,7 +383,8 @@ public final class CoomiVoiceManager {
 
     private List<TextToSpeech.EngineInfo> safeGetEngines() {
         try {
-            List<TextToSpeech.EngineInfo> engines = TextToSpeech.getEngines(context);
+            // API 14+ 无参版本；context 版本仅存在于极旧 SDK。
+            List<TextToSpeech.EngineInfo> engines = TextToSpeech.getEngines();
             return engines == null ? new ArrayList<>() : engines;
         } catch (Exception e) {
             return new ArrayList<>();

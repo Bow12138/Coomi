@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -19,6 +20,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.util.List;
 
 /**
@@ -297,6 +300,65 @@ public final class CoomiAccessibilityService extends AccessibilityService {
 
     public static boolean isConnected() {
         return sInstance != null;
+    }
+
+    /**
+     * 通过无障碍通道截图（API 30+，Shizuku screencap 不可用时的降级路径）。
+     * 返回 {ok, path}。
+     */
+    public static String takeScreenshot(String dir) {
+        CoomiAccessibilityService svc = sInstance;
+        if (svc == null) return "{\"ok\":false,\"error\":\"accessibility_disabled\"}";
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return "{\"ok\":false,\"error\":\"requires_api_30\"}";
+        }
+        return svc.captureScreenshot(dir);
+    }
+
+    private String captureScreenshot(String dir) {
+        final java.util.concurrent.CountDownLatch latch =
+            new java.util.concurrent.CountDownLatch(1);
+        final String[] result = {"{\"ok\":false,\"error\":\"timeout\"}"};
+        try {
+            takeScreenshot(android.view.Display.DEFAULT_DISPLAY, r -> handler.post(r),
+                new android.accessibilityservice.AccessibilityService.TakeScreenshotCallback() {
+                    @Override
+                    public void onSuccess(
+                        android.accessibilityservice.AccessibilityService.ScreenshotResult screenshot) {
+                        try {
+                            android.hardware.HardwareBuffer hb = screenshot.getHardwareBuffer();
+                            android.graphics.Bitmap bmp =
+                                android.graphics.Bitmap.wrapHardwareBuffer(hb, screenshot.getColorSpace());
+                            if (bmp == null) {
+                                result[0] = "{\"ok\":false,\"error\":\"bitmap_null\"}";
+                            } else {
+                                File out = new File(dir, "anna_screenshot.png");
+                                FileOutputStream fos = new FileOutputStream(out);
+                                try {
+                                    bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, fos);
+                                } finally {
+                                    fos.close();
+                                }
+                                result[0] = "{\"ok\":true,\"path\":\"" + out.getAbsolutePath() + "\"}";
+                            }
+                        } catch (Exception e) {
+                            result[0] = "{\"ok\":false,\"error\":\"" + e.getMessage() + "\"}";
+                        } finally {
+                            latch.countDown();
+                        }
+                    }
+
+                    @Override
+                    public void onFailure(int errorCode) {
+                        result[0] = "{\"ok\":false,\"error\":\"screenshot_failed_" + errorCode + "\"}";
+                        latch.countDown();
+                    }
+                });
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            result[0] = "{\"ok\":false,\"error\":\"" + e.getMessage() + "\"}";
+        }
+        return result[0];
     }
 
     /**

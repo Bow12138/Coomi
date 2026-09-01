@@ -1,26 +1,30 @@
 package app.coomi;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
-import android.os.Handler;
-import android.os.Looper;
+import android.os.IBinder;
+import android.os.Parcel;
 import android.util.Log;
 
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.InputStreamReader;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import rikka.shizuku.Shizuku;
 
 /**
  * Shizuku 白名单 adb 命令执行器（AI 屏幕操控的执行底座）。
  *
- * <p>借 Android 自己的 ADB 通道（Shizuku Binder）以 shell 身份执行有限命令：
- * {@code input tap/swipe/text/keyevent}、{@code screencap}、{@code am ...}。
- * 安全护栏（强度高）：白名单前缀过滤，高危命令（rm/install/settings put/pm/
- * reboot/su 等）一律拒绝；每条命令的结果以 JSON 返回供前端审计。</p>
+ * <p>借 Shizuku 以 shell（ADB）身份执行有限命令：{@code input tap/swipe/text/
+ * keyevent}、{@code screencap}、{@code am ...}。命令在 {@link ShellUserService}
+ * （Shizuku UserService，独立进程，shell uid）内运行。</p>
+ *
+ * <p>安全护栏（强度高）：白名单前缀过滤，高危命令（rm/install/settings put/pm/
+ * reboot/su 等）一律拒绝；每次执行结果以 JSON 返回供前端审计。</p>
  */
 public final class ShizukuExec {
 
@@ -33,8 +37,8 @@ public final class ShizukuExec {
     };
 
     private final Context context;
-    @SuppressWarnings("unused")
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    /** 已绑定的 UserService Binder（volatile，跨线程可见）。 */
+    private volatile IBinder sBinder;
 
     public ShizukuExec(Context context) {
         this.context = context.getApplicationContext();
@@ -82,21 +86,29 @@ public final class ShizukuExec {
             return "{\"ok\":false,\"error\":\"command_not_allowed\"}";
         }
         try {
-            Process proc = Shizuku.newProcess(new String[]{"sh", "-c", cmd}, null, null);
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader reader =
-                     new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    out.append(line).append('\n');
-                }
+            IBinder binder = getBinder();
+            if (binder == null) {
+                return "{\"ok\":false,\"error\":\"user_service_bind_failed\"}";
             }
-            proc.waitFor();
-            String output = out.toString().trim();
-            JSONObject json = new JSONObject();
-            json.put("ok", true);
-            json.put("output", output);
-            return json.toString();
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(ShellUserService.DESCRIPTOR);
+                data.writeString(cmd);
+                boolean ok = binder.transact(ShellUserService.CMD_EXEC, data, reply, 0);
+                if (!ok) {
+                    return "{\"ok\":false,\"error\":\"transact_failed\"}";
+                }
+                reply.readException();
+                String output = reply.readString();
+                JSONObject json = new JSONObject();
+                json.put("ok", true);
+                json.put("output", output == null ? "" : output);
+                return json.toString();
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
         } catch (Exception e) {
             Log.e(TAG, "exec failed: " + cmd, e);
             JSONObject json = new JSONObject();
@@ -109,31 +121,84 @@ public final class ShizukuExec {
         }
     }
 
-    /** 截图到应用私有目录，返回 {ok, path, guestPath}。 */
+    /** 获取（必要时绑定）UserService Binder，限时等待 5s。 */
+    private IBinder getBinder() {
+        IBinder binder = sBinder;
+        if (binder != null && binder.pingBinder()) return binder;
+        sBinder = null;
+        final CountDownLatch latch = new CountDownLatch(1);
+        ComponentName cn = new ComponentName(context, ShellUserService.class);
+        Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(cn)
+            .daemon(false)
+            .tag("coomi-shell");
+        try {
+            Shizuku.bindUserService(args, new ServiceConnection() {
+                @Override
+                public void onServiceConnected(ComponentName name, IBinder service) {
+                    sBinder = service;
+                    latch.countDown();
+                }
+
+                @Override
+                public void onServiceDisconnected(ComponentName name) {
+                    sBinder = null;
+                }
+            });
+        } catch (Exception e) {
+            Log.e(TAG, "bindUserService failed", e);
+            return null;
+        }
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                Log.e(TAG, "bindUserService timeout");
+                return null;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        return sBinder;
+    }
+
+    /**
+     * 截图（screencap 到 /sdcard，再复制到 app 目录与引擎可见目录），
+     * 返回 {ok, path, guestPath}。截图失败时返回原始错误。
+     */
     public String screenCapture() {
-        File dir = context.getExternalFilesDir(null);
-        if (dir == null) dir = context.getFilesDir();
-        File out = new File(dir, "anna_screenshot.png");
-        String result = exec("screencap -p " + out.getAbsolutePath());
+        // shell 身份无法写 app 私有目录，screencap 输出到 /sdcard（targetSdk 28 legacy 可读写）。
+        String remote = "/sdcard/anna_screenshot.png";
+        String result = exec("screencap -p " + remote);
         try {
             JSONObject json = new JSONObject(result);
             if (json.optBoolean("ok")) {
-                // 复制到引擎可见目录（guest /home/coomi/screenshots/），
-                // 这样 ProotLinux 引擎与 Web 端都能读取该截图用于视觉理解。
+                File src = new File(remote);
+                if (!src.exists() || src.length() == 0) {
+                    return "{\"ok\":false,\"error\":\"screenshot_file_missing\"}";
+                }
                 String guestPath = "";
+                String localPath = "";
                 try {
+                    // 1) app 私有目录副本（Web 端可直接读）
+                    File dir = context.getExternalFilesDir(null);
+                    if (dir == null) dir = context.getFilesDir();
+                    File local = new File(dir, "anna_screenshot.png");
+                    java.nio.file.Files.copy(src.toPath(), local.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    localPath = local.getAbsolutePath();
+                    // 2) 引擎可见目录（guest /home/coomi/screenshots/）
                     File home = new File(context.getFilesDir(), "home/screenshots");
                     if (!home.exists()) home.mkdirs();
                     File target = new File(home, "anna_screenshot.png");
-                    java.nio.file.Files.copy(out.toPath(), target.toPath(),
+                    java.nio.file.Files.copy(src.toPath(), target.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                     guestPath = "/home/coomi/screenshots/anna_screenshot.png";
-                } catch (Exception ignored) {
-                    // 复制失败不影响主路径返回
+                } catch (Exception e) {
+                    Log.e(TAG, "copy screenshot failed", e);
                 }
                 JSONObject resp = new JSONObject();
                 resp.put("ok", true);
-                resp.put("path", out.getAbsolutePath());
+                resp.put("path", localPath);
+                resp.put("remotePath", remote);
                 if (!guestPath.isEmpty()) resp.put("guestPath", guestPath);
                 return resp.toString();
             }
@@ -143,5 +208,16 @@ public final class ShizukuExec {
     }
 
     public void release() {
+        IBinder binder = sBinder;
+        sBinder = null;
+        if (binder != null && binder.pingBinder()) {
+            try {
+                Parcel data = Parcel.obtain();
+                data.writeInterfaceToken(ShellUserService.DESCRIPTOR);
+                binder.transact(ShellUserService.CMD_DESTROY, data, null, 0);
+                data.recycle();
+            } catch (Exception ignored) {
+            }
+        }
     }
 }
