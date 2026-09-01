@@ -1,7 +1,6 @@
 package app.coomi;
 
 import android.os.Binder;
-import android.os.IBinder;
 import android.os.Parcel;
 import android.os.RemoteException;
 
@@ -34,7 +33,9 @@ public final class ShellUserService extends Binder {
     public static final int CMD_DESTROY = 16777115;
 
     public ShellUserService() {
-        // Binder 自身非 IInterface；onTransact 里手动 enforceInterface 校验 token。
+        // owner 传 null（跨进程调用不需要本地 IInterface），descriptor 用于
+        // enforceInterface 校验客户端 token。
+        attachInterface(null, DESCRIPTOR);
     }
 
     @Override

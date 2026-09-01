@@ -313,7 +313,24 @@ public final class CoomiVoiceManager {
 
     private void initTts() {
         if (tts != null) return;
-        ttsEngines = safeGetEngines();
+        if (ttsEngines.isEmpty()) {
+            // 引擎枚举：compileSdk 36 只有 API 34+ 的实例方法 getEngines()。
+            // 用一个临时实例探测；API 24-33 会抛 NoSuchMethodError，捕获后走默认引擎。
+            TextToSpeech probe = null;
+            try {
+                probe = new TextToSpeech(context, null);
+                List<TextToSpeech.EngineInfo> list = probe.getEngines();
+                if (list != null && !list.isEmpty()) {
+                    ttsEngines = new ArrayList<>(list);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "enumerate tts engines failed (default engine will be used)", e);
+            } finally {
+                if (probe != null) {
+                    try { probe.shutdown(); } catch (Exception ignored) { }
+                }
+            }
+        }
         ttsEngineIndex = -1;
         // 步骤 2：挑选可用引擎（避开 oplus/ttsaccessibility 问题引擎）
         String engine = pickNextEngine();
@@ -378,16 +395,6 @@ public final class CoomiVoiceManager {
                 && result != TextToSpeech.LANG_NOT_SUPPORTED;
         } catch (Exception ignored) {
             return false;
-        }
-    }
-
-    private List<TextToSpeech.EngineInfo> safeGetEngines() {
-        try {
-            // API 14+ 无参版本；context 版本仅存在于极旧 SDK。
-            List<TextToSpeech.EngineInfo> engines = TextToSpeech.getEngines();
-            return engines == null ? new ArrayList<>() : engines;
-        } catch (Exception e) {
-            return new ArrayList<>();
         }
     }
 
