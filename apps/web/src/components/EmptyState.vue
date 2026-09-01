@@ -10,6 +10,7 @@ import { useSessionStore } from '@/stores/session'
 import { useConnectionStore } from '@/stores/connection'
 import CoomiIcon from './CoomiIcon.vue'
 import CoomiMark from './CoomiMark.vue'
+import { appName } from '@/utils/brand'
 
 const session = useSessionStore()
 const config = useConfigStore()
@@ -24,7 +25,7 @@ const MODES = [
 const SUGGESTIONS: { icon: string; text: string; guide?: string }[] = [
   { icon: 'phone', text: '查看手机系统信息与型号信息' },
   { icon: 'globe', text: '今日科技圈热点话题' },
-  { icon: 'sparkle', text: 'Coomi 新手使用指南', guide: 'newbie' },
+  { icon: 'sparkle', text: `${appName()} 新手使用指南`, guide: 'newbie' },
   { icon: 'cube', text: '自定义拓展进化指南', guide: 'extension' },
 ]
 

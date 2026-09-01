@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { appName } from '@/utils/brand'
 import { useRouter } from 'vue-router'
 import { apiGet, apiSend } from '@/bridge/http'
 import { goBack } from '@/bridge/navigation'
@@ -73,7 +74,7 @@ const status = ref<LifeStatus | null>(null)
 const busy = ref('')
 const message = ref('')
 const error = ref('')
-const name = ref('Coomi Life')
+const name = ref(`${appName()} Life`)
 const address = ref('你')
 const preset = ref('balanced')
 const pendingIdentity = ref<IdentityConfig | null>(null)

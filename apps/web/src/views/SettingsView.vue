@@ -4,6 +4,7 @@
  * 和抽屉、空态里的选中语言保持一致。
  */
 import { computed, ref, onMounted } from 'vue'
+import { appName } from '@/utils/brand'
 import { useRouter } from 'vue-router'
 import { useConfigStore, DEFAULT_CONNECTION_SETTINGS, PERMISSION_MODES, REASONING_EFFORTS, type ConnectionSettings } from '@/stores/config'
 import { useSessionStore } from '@/stores/session'
@@ -168,7 +169,7 @@ onMounted(async () => {
           <span class="ri" :class="{ on: config.globalMemory }"><CoomiIcon name="clock" :size="17" /></span>
           <span class="rt">
             <span class="rmain">全局会话记忆</span>
-            <span class="rsub" :class="{ err: !!gmError }">{{ gmError || (config.globalMemory ? '开启后 Coomi 可读取所有历史会话文件' : '全局会话记忆已关闭：Coomi 无法读取任何历史会话') }}</span>
+            <span class="rsub" :class="{ err: !!gmError }">{{ gmError || (config.globalMemory ? `开启后 ${appName()} 可读取所有历史会话文件` : `全局会话记忆已关闭：${appName()} 无法读取任何历史会话`) }}</span>
           </span>
           <span class="sw" :class="{ on: config.globalMemory }" />
         </button>

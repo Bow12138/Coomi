@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { appName } from '@/utils/brand'
 import { ref, computed, shallowRef, watch } from 'vue'
 import { createTransport, type Transport } from '@/bridge'
 import { authedFetch, apiGet } from '@/bridge/http'
@@ -88,11 +89,11 @@ export const useSessionStore = defineStore('session', () => {
 
   /** 发送内置引导（EmptyState 引导卡）：先置用户标题消息，再让引擎流式推正文。 */
   const GUIDE_TITLES: Record<string, string> = {
-    newbie: 'Coomi 新手使用指南',
+    newbie: `${appName()} 新手使用指南`,
     extension: '自定义拓展进化指南',
   }
   function sendGuide(key: string) {
-    const trimmed = (GUIDE_TITLES[key] ?? 'Coomi 指南').trim()
+    const trimmed = (GUIDE_TITLES[key] ?? `${appName()} 指南`).trim()
     // 首条用户消息作为会话标题，抽屉里就不会全是「新对话」。
     const isFirst = !timeline.value.some(t => t.kind === 'user')
     if (isFirst) sessions.touch(sessionId.value, { title: sessions.deriveTitle(trimmed) })

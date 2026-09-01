@@ -4,7 +4,11 @@ import App from './App.vue'
 import { router } from './router'
 import { installSystemBackHandler } from './bridge/navigation'
 import { readThemeMode, applyTheme, type ThemeMode } from './stores/config'
+import { appName } from './utils/brand'
 import './styles/global.css'
+
+// 品牌标题：dev 版（端口 18765）= Anna，官方版 = Coomi。
+document.title = `${appName()} Agent`
 
 const CUSTOM_PROPERTIES = [
   '--page', '--bg', '--bg-card', '--bg-elevated', '--fill', '--bg-input', '--code-bg',

@@ -10,6 +10,7 @@ import { PERMISSION_MODES, REASONING_EFFORTS, useConfigStore } from '@/stores/co
 import { useSessionStore } from '@/stores/session'
 import { useRouter } from 'vue-router'
 import CoomiIcon from './CoomiIcon.vue'
+import { appName } from '@/utils/brand'
 
 const session = useSessionStore()
 const config = useConfigStore()
@@ -21,7 +22,7 @@ const SLASH_COMMANDS = [
   { name: '/plan', desc: '进入计划模式' },
   { name: '/mcp', desc: '管理 MCP 服务器' },
   { name: '/skills', desc: '查看可用技能' },
-  { name: '/memory', desc: '查看 Coomi 内建持久记忆' },
+  { name: '/memory', desc: `查看 ${appName()} 内建持久记忆` },
   { name: '/compact', desc: '立即压缩当前上下文' },
 ]
 
@@ -234,7 +235,7 @@ watch(text, () => {
           class="input"
           :class="{ scrollable: textareaScrollable }"
           rows="1"
-          :placeholder="session.isBusy ? '插队补充指令…' : '给 Coomi 下达任务…'"
+          :placeholder="session.isBusy ? '插队补充指令…' : `给 ${appName()} 下达任务…`"
           @input="autoGrow"
           @keydown="onKeydown"
         />

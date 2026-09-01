@@ -4,7 +4,10 @@ plugins {
 
 def coomiDevBuild = System.getenv("COOMI_DEV_BUILD") == "1"
 def coomiPackageName = coomiDevBuild ? "com.coomidev.android" : "com.coomi.android"
-def coomiAppName = coomiDevBuild ? "CoomiDev" : "Coomi"
+// Anna 定制：dev 版默认显示名 Anna，可用 COOMI_APP_NAME_OVERRIDE 环境变量覆盖（CI 或本地）。
+// 官方版（非 dev）保持 "Coomi" 不变。
+def coomiAppNameDefault = coomiDevBuild ? "Anna" : "Coomi"
+def coomiAppName = System.getenv("COOMI_APP_NAME_OVERRIDE") ?: coomiAppNameDefault
 def coomiNdkHomeOverride = System.getenv("COOMI_NDK_HOME")
 
 configurations.configureEach {
@@ -203,7 +206,7 @@ android {
         variant.outputs.all { output ->
             def tag = apkVersionTag ? apkVersionTag : project.ext.packageVariant + "-" + variant.buildType.name
             outputFileName = new File(coomiDevBuild
-                ? "CoomiDev-${variant.versionName}-${variant.buildType.name}-arm64-v8a.apk"
+                ? "${coomiAppName}-${variant.versionName}-${variant.buildType.name}-arm64-v8a.apk"
                 : "coomi-app_" + tag + "_arm64-v8a.apk")
         }
     }
