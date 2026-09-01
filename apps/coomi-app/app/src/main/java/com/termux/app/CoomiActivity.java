@@ -18,6 +18,7 @@ import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Base64;
 import android.view.View;
@@ -95,6 +96,8 @@ public class CoomiActivity extends Activity {
     private CoomiService mCoomiService;
     private boolean mBound;
     private boolean mStartRequested;
+    private app.coomi.CoomiVoiceManager mVoiceManager;
+    private app.coomi.ShizukuExec mShizukuExec;
     private boolean mPageLoaded;
     private int mAutomaticRecoveryAttempts;
     private String mPendingExportPath;
@@ -140,6 +143,11 @@ public class CoomiActivity extends Activity {
         mRetryButton = findViewById(R.id.btn_coomi_retry);
         mRetryButton.setOnClickListener(v -> retryStart());
         configureWebView();
+        mVoiceManager = new app.coomi.CoomiVoiceManager(this);
+        app.coomi.CoomiVoiceManager.setJsCallback(js -> runOnUiThread(() -> {
+            if (mWebView != null) mWebView.evaluateJavascript(js, null);
+        }));
+        mShizukuExec = new app.coomi.ShizukuExec(this);
 
         showLoading(getString(R.string.coomi_starting));
 
@@ -474,6 +482,105 @@ public class CoomiActivity extends Activity {
     private final class AndroidBridge {
         @JavascriptInterface
         public void openDashboard() { runOnUiThread(CoomiActivity.this::openDashboard); }
+        // ==================== 语音：本地 sherpa STT + 系统 TTS ====================
+
+        /** 是否已授予麦克风权限。 */
+        @JavascriptInterface
+        public boolean hasMicPermission() {
+            return mVoiceManager != null && mVoiceManager.hasRecordPermission();
+        }
+
+        /** 申请麦克风权限（首次语音时系统弹窗）。 */
+        @JavascriptInterface
+        public void requestMicPermission() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                runOnUiThread(() -> requestPermissions(
+                    new String[]{android.Manifest.permission.RECORD_AUDIO}, 2401));
+            }
+        }
+
+        /** 开始语音识别（sherpa-ncnn 本地离线，结果经 window.__coomiVoiceResult 回调）。 */
+        @JavascriptInterface
+        public void startVoiceInput() {
+            if (mVoiceManager != null) mVoiceManager.startRecognition();
+        }
+
+        /** 停止当前识别。 */
+        @JavascriptInterface
+        public void stopVoiceInput() {
+            if (mVoiceManager != null) mVoiceManager.stopRecognition();
+        }
+
+        /** 朗读一段文本（系统 TTS，四步异常链路）。 */
+        @JavascriptInterface
+        public void speak(String text) {
+            if (mVoiceManager != null) mVoiceManager.speak(text);
+        }
+
+        /** 停止朗读。 */
+        @JavascriptInterface
+        public void stopSpeaking() {
+            if (mVoiceManager != null) mVoiceManager.stopSpeaking();
+        }
+
+        // ==================== AI 屏幕操控：Shizuku adb（白名单） ====================
+
+        /** Shizuku 是否可用（已授权 + 已连接）。 */
+        @JavascriptInterface
+        public boolean shizukuAvailable() {
+            return mShizukuExec != null && mShizukuExec.isAvailable();
+        }
+
+        /** 请求 Shizuku 授权。 */
+        @JavascriptInterface
+        public void requestShizukuPermission() {
+            if (mShizukuExec != null) mShizukuExec.requestPermission();
+        }
+
+        /** 执行白名单 adb 命令（screencap/input/am 等），返回 stdout。 */
+        @JavascriptInterface
+        public String execAdb(String command) {
+            if (mShizukuExec == null) return "{\"ok\":false,\"error\":\"unavailable\"}";
+            return mShizukuExec.exec(command);
+        }
+
+        /** 截图到本地并返回路径（经 adb screencap）。 */
+        @JavascriptInterface
+        public String screenCapture() {
+            if (mShizukuExec == null) return "{\"ok\":false,\"error\":\"unavailable\"}";
+            return mShizukuExec.screenCapture();
+        }
+
+        /** 无障碍服务是否已启用。 */
+        @JavascriptInterface
+        public boolean accessibilityEnabled() {
+            return app.coomi.CoomiAccessibilityService.isConnected();
+        }
+
+        /** 无障碍执行操作（tap/swipe/back/home/input_text），返回结果 JSON。 */
+        @JavascriptInterface
+        public String accessibilityAction(String action, float x, float y, float x2, float y2, String text) {
+            return app.coomi.CoomiAccessibilityService.performAction(action, x, y, x2, y2, text);
+        }
+
+        /** 无障碍读取当前窗口控件树（JSON）。 */
+        @JavascriptInterface
+        public String accessibilityDump() {
+            return app.coomi.CoomiAccessibilityService.dumpHierarchy();
+        }
+
+        /** 打开系统「无障碍」设置页，引导用户开启 Anna 的无障碍服务。 */
+        @JavascriptInterface
+        public void openAccessibilitySettings() {
+            try {
+                Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception e) {
+                Log.e(TAG, "openAccessibilitySettings failed", e);
+            }
+        }
+
 
         /** 前端上报任务状态（running/done），更新通知栏「任务执行中/已完成」。 */
         @JavascriptInterface
@@ -1008,6 +1115,8 @@ public class CoomiActivity extends Activity {
         }
         // The engine keeps running under CoomiEngineMonitor; only drop the view.
         if (mWebView != null) {
+            if (mVoiceManager != null) { mVoiceManager.release(); mVoiceManager = null; }
+            if (mShizukuExec != null) { mShizukuExec.release(); mShizukuExec = null; }
             mWebView.destroy();
             mWebView = null;
         }

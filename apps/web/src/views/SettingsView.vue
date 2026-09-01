@@ -136,6 +136,52 @@ onMounted(async () => {
   } catch { /* 旧引擎进程：接口不存在，保持默认开启 */ }
 })
 
+/** AI 屏幕操控：Shizuku / 无障碍 状态与调试工具（仅原生壳可用，dev 版）。 */
+const hasNative = typeof window !== 'undefined' && !!window.CoomiAndroid
+const screenStatus = ref('')
+const screenLog = ref('')
+
+function refreshScreenStatus() {
+  if (!hasNative) return
+  const shizuku = window.CoomiAndroid?.shizukuAvailable?.() ? '已授权' : '未授权'
+  const a11y = window.CoomiAndroid?.accessibilityEnabled?.() ? '已开启' : '未开启'
+  screenStatus.value = `Shizuku：${shizuku} · 无障碍：${a11y}`
+}
+
+function requestShizuku() {
+  if (!hasNative) return
+  window.CoomiAndroid?.requestShizukuPermission?.()
+  setTimeout(refreshScreenStatus, 1200)
+}
+
+function openAccessibility() {
+  if (!hasNative) return
+  window.CoomiAndroid?.openAccessibilitySettings?.()
+}
+
+function doScreenCapture() {
+  if (!hasNative) return
+  try {
+    const r = JSON.parse(window.CoomiAndroid?.screenCapture?.() ?? '{"ok":false,"error":"unavailable"}')
+    screenLog.value = r.ok
+      ? `截图成功${r.guestPath ? '（引擎路径 ' + r.guestPath + '）' : ''}`
+      : '截图失败：' + (r.error ?? 'unknown')
+  } catch { screenLog.value = '截图失败：返回异常' }
+}
+
+function doDumpHierarchy() {
+  if (!hasNative) return
+  const raw = window.CoomiAndroid?.accessibilityDump?.() ?? '{"ok":false,"error":"unavailable"}'
+  try {
+    const r = JSON.parse(raw)
+    screenLog.value = r.ok
+      ? `控件树已导出（${r.nodes ? r.nodes.length + ' 个节点' : '见返回 JSON'}），可交由视觉模型定位操作`
+      : '控件树获取失败：' + (r.error ?? 'unknown')
+  } catch {
+    screenLog.value = raw.length > 400 ? raw.slice(0, 400) + '…' : raw
+  }
+}
+
 </script>
 <template>
   <div class="page">
@@ -277,6 +323,25 @@ onMounted(async () => {
         </button>
       </div>
 
+      <p class="sec-label">屏幕操控</p>
+      <div class="group">
+        <div class="row static">
+          <span class="ri"><CoomiIcon name="cpu" :size="17" /></span>
+          <span class="rt">
+            <span class="rmain">Shizuku / 无障碍</span>
+            <span class="rsub">{{ screenStatus || (hasNative ? '点击「刷新状态」查看授权情况' : '需在 Anna 原生客户端中使用') }}</span>
+          </span>
+        </div>
+        <div v-if="hasNative" class="sc-actions">
+          <button class="sc-btn" @click="refreshScreenStatus">刷新状态</button>
+          <button class="sc-btn" @click="requestShizuku">Shizuku 授权</button>
+          <button class="sc-btn" @click="openAccessibility">无障碍设置</button>
+          <button class="sc-btn" @click="doScreenCapture">截图</button>
+          <button class="sc-btn" @click="doDumpHierarchy">控件树</button>
+        </div>
+        <div v-if="screenLog" class="sc-log">{{ screenLog }}</div>
+      </div>
+
       <div class="foot">
         <span class="conn" :class="{ on: connection.isOpen }"><i />{{ connection.label }}</span>
         <span class="sid">{{ session.sessionId }}</span>
@@ -357,4 +422,20 @@ onMounted(async () => {
 .conn i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); }
 .conn.on i { background: var(--ok); }
 .sid { max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3); }
+/* 屏幕操控（Shizuku / 无障碍） */
+.row.static { cursor: default; }
+.sc-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 10px 10px; }
+.sc-btn {
+  height: 30px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--fill); font-size: 12.5px; color: var(--text-2);
+}
+.sc-btn:active { background: var(--blue-soft); border-color: var(--blue-border); color: var(--blue); }
+.sc-log {
+  margin: 0 10px 10px; padding: 8px 10px;
+  border-radius: 8px; background: var(--fill);
+  font-size: 11.5px; line-height: 1.5; color: var(--text-2);
+  word-break: break-all;
+}
+
 </style>

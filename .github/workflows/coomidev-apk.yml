@@ -1,0 +1,237 @@
+name: CoomiDev APK (Anna)
+
+# Build the isolated CoomiDev APK with COOMI_DEV_BUILD=1.
+# The APK is packaged from the fork's feature branch and uploaded as an artifact.
+# Signing uses the forked repository's encrypted COOMI_SIGNING_* secrets
+# (a per-run generated debug keystore is the fallback; preview build, not a
+# release identity). Do NOT put signing passwords or private keys in this file.
+#
+# Anna additions over the base CoomiDev build:
+#  - COOMI_APP_NAME_OVERRIDE=Anna (display name)
+#  - bundles the local sherpa-ncnn Chinese streaming model into assets/models/
+#    (downloaded from the pinned k2-fsa/sherpa-ncnn release tag, checksum-verified)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Source ref (branch or tag) to build'
+        required: true
+        default: 'codex/custom-anna-brand'
+        type: string
+  push:
+    branches:
+      - 'codex/custom-anna-brand'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coomidev-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COOMI_DEV_BUILD: '1'
+  COOMI_APP_NAME_OVERRIDE: 'Anna'
+  COMPILE_SDK: '36'
+  NDK_VERSION: '27.0.12077973'
+  JAVA_VERSION: '17'
+  NODE_VERSION: '22'
+  RUST_VERSION: '1.95.0'
+  RUNTIME_V2_TAG: 'runtime-v2-debian-bookworm-20260824'
+  PROOT_HOST_TAG: 'runtime-v2-debian-bookworm-20260803'
+  SHERPA_MODEL: 'sherpa-ncnn-streaming-zipformer-zh-14M-2023-02-23'
+  SHERPA_MODEL_SHA256: 'b12f7af0ee53b9ec7089579349b8536d03ec0b4a0e1f4d8ea26be14c395e597f'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android
+          components: clippy, rustfmt
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ github.sha }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Setup Android SDK commandline tools
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+          cmdline-tools-version: 'latest'
+
+      - name: Install Android platform, build-tools and NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.0.12077973"
+
+      - name: Build frontend (Vue)
+        shell: bash
+        run: |
+          cd apps/web
+          npm ci
+          npm run type-check
+          npm run build
+
+      - name: Fetch Runtime V2 assets (pinned, checksum verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-v2-dist
+          BASE="https://github.com/TensorHub-ORG/Coomi/releases/download"
+          curl -fsSL -o runtime-v2-dist/proot-host-arm64.tar.gz \
+            "$BASE/$PROOT_HOST_TAG/proot-host-arm64.tar.gz"
+          echo "77eb98f3d528bb83db0bba6fec703f577724dd7fefcaf8cafc34607eaac60f0e  runtime-v2-dist/proot-host-arm64.tar.gz" | sha256sum -c -
+          curl -fsSL -o runtime-v2-dist/debian-bookworm-arm64.tar.gz \
+            "$BASE/$RUNTIME_V2_TAG/debian-bookworm-arm64.tar.gz"
+          echo "43ebcee7855f4c15e90514ddb111bd0830acbf9602a7d0e19594aa299bbe8105  runtime-v2-dist/debian-bookworm-arm64.tar.gz" | sha256sum -c -
+
+      - name: Fetch sherpa-ncnn Chinese streaming model (pinned, checksum verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p apps/coomi-app/app/src/main/assets/models
+          curl -fsSL -o /tmp/sherpa-model.tar.bz2 \
+            "https://github.com/k2-fsa/sherpa-ncnn/releases/download/models/${{ env.SHERPA_MODEL }}.tar.bz2"
+          echo "${{ env.SHERPA_MODEL_SHA256 }}  /tmp/sherpa-model.tar.bz2" | sha256sum -c -
+          tar -xjf /tmp/sherpa-model.tar.bz2 -C apps/coomi-app/app/src/main/assets/models/
+          test -f "apps/coomi-app/app/src/main/assets/models/${{ env.SHERPA_MODEL }}/encoder_jit_trace-pnnx.ncnn.param"
+          test -f "apps/coomi-app/app/src/main/assets/models/${{ env.SHERPA_MODEL }}/tokens.txt"
+          du -sh "apps/coomi-app/app/src/main/assets/models/${{ env.SHERPA_MODEL }}"
+
+      - name: Fetch sherpa-ncnn Android JNI libs (pinned, binary checksums verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # jniLibs/ is git-ignored (generated at build time), so stage the
+          # sherpa .so files here; the Rust step stages libcoomi.so alongside.
+          curl -fsSL -o /tmp/sherpa-android.tar.bz2 \
+            "https://github.com/k2-fsa/sherpa-ncnn/releases/download/v2.1.15/sherpa-ncnn-v2.1.15-android.tar.bz2"
+          mkdir -p /tmp/sherpa-android
+          tar -xjf /tmp/sherpa-android.tar.bz2 -C /tmp/sherpa-android
+          SHERPA_SO="$(find /tmp/sherpa-android -type f -name 'libsherpa-ncnn-jni.so' | head -n 1)"
+          NCNN_SO="$(find /tmp/sherpa-android -type f -name 'libncnn.so' | head -n 1)"
+          test -n "$SHERPA_SO" && test -n "$NCNN_SO"
+          echo "b029ace14714523d8b701df11dd66f76c2f6c1213cbf8b0494c741c2a9f0612b  $SHERPA_SO" | sha256sum -c -
+          echo "6f2a42d3acb6a5dd1677e458763bb45854d92efe036fd641a7cf5718d56c93d1  $NCNN_SO" | sha256sum -c -
+          mkdir -p apps/coomi-app/app/src/main/jniLibs/arm64-v8a
+          cp "$SHERPA_SO" "$NCNN_SO" apps/coomi-app/app/src/main/jniLibs/arm64-v8a/
+          ls -la apps/coomi-app/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Restore official signing keystore + local.properties
+        shell: bash
+        env:
+          COOMI_SIGNING_KEYSTORE: ${{ secrets.COOMI_SIGNING_KEYSTORE }}
+          COOMI_SIGNING_STORE_PASS: ${{ secrets.COOMI_SIGNING_STORE_PASS }}
+          COOMI_SIGNING_KEY_PASS: ${{ secrets.COOMI_SIGNING_KEY_PASS }}
+        run: |
+          set -euo pipefail
+          STORE_FILE="$GITHUB_WORKSPACE/apps/coomi-app/app/testkey_untrusted.jks"
+          # build.gradle hardcodes storeFile testkey_untrusted.jks. Restore the
+          # official release keystore from the repository secret and wire the
+          # signing passwords through local.properties. The keystore and
+          # passwords are never written to the repository or printed.
+          test -n "$COOMI_SIGNING_KEYSTORE" || { echo "Missing secret COOMI_SIGNING_KEYSTORE" >&2; exit 1; }
+          test -n "$COOMI_SIGNING_STORE_PASS" || { echo "Missing secret COOMI_SIGNING_STORE_PASS" >&2; exit 1; }
+          test -n "$COOMI_SIGNING_KEY_PASS" || { echo "Missing secret COOMI_SIGNING_KEY_PASS" >&2; exit 1; }
+          printf '%s' "$COOMI_SIGNING_KEYSTORE" | base64 -d > "$STORE_FILE"
+          chmod 600 "$STORE_FILE"
+          cat > local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          coomi.signing.storePassword=$COOMI_SIGNING_STORE_PASS
+          coomi.signing.keyPassword=$COOMI_SIGNING_KEY_PASS
+          EOF
+
+      - name: Build CoomiDev APK (frontend + Rust + Android)
+        shell: bash
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME}"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          export COOMI_NDK_HOME="$ANDROID_NDK_HOME"
+          # On the ubuntu x86_64 runner the official NDK provides a linux-x86_64
+          # toolchain that can cross-compile to aarch64-linux-android, so do NOT
+          # set COOMI_NDK_TOOLCHAIN_DIR here (that is only for ARM64 Linux hosts).
+          # gradlew is committed without the executable bit (git mode 100644), so ensure it is runnable.
+          chmod +x gradlew
+          # The .S bootstrap incbin is resolved relative to the ndk-build working
+          # directory (the app module root). Keep a copy there as well as the
+          # git-tracked src/main/cpp one so the assembler can always find it.
+          cp apps/coomi-app/app/src/main/cpp/bootstrap-aarch64.zip apps/coomi-app/app/bootstrap-aarch64.zip
+          ./gradlew --no-daemon --max-workers=2 :app:assembleRelease
+
+      - name: Verify APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'Anna-*.apk' | sort | tail -n 1)"
+          echo "APK=$APK"
+          test -n "$APK" && test -s "$APK"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          "$BT/aapt2" dump badging "$APK" > badging.txt
+          grep "package: name='com.coomidev.android'" badging.txt
+          grep -E "application-label(-zh)?:'Anna'" badging.txt
+          grep "native-code: 'arm64-v8a'" badging.txt
+
+      - name: Verify sherpa native lib + model bundled in APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'Anna-*.apk' | sort | tail -n 1)"
+          unzip -l "$APK" | grep -E "lib/arm64-v8a/libsherpa-ncnn-jni\.so|lib/arm64-v8a/libncnn\.so"
+          unzip -l "$APK" | grep -E "assets/models/${{ env.SHERPA_MODEL }}/encoder_jit_trace-pnnx\.ncnn\.param"
+          unzip -l "$APK" | grep -E "assets/models/${{ env.SHERPA_MODEL }}/tokens\.txt"
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find apps/coomi-app/app/build/outputs -type f -name 'Anna-*.apk' | sort | tail -n 1)"
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          "$BT/apksigner" verify --verbose "$APK"
+
+      - name: Upload CoomiDev APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coomidev-apk-anna
+          path: apps/coomi-app/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

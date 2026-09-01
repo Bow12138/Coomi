@@ -11,6 +11,7 @@ import { useSessionStore } from '@/stores/session'
 import { useRouter } from 'vue-router'
 import CoomiIcon from './CoomiIcon.vue'
 import { appName } from '@/utils/brand'
+import { readAloud, setReadAloud } from '@/stores/voice'
 
 const session = useSessionStore()
 const config = useConfigStore()
@@ -106,6 +107,59 @@ async function insertSlash(cmd: string) {
 function toggleQuick() { quickOpen.value = !quickOpen.value }
 function toggleLifeStats() { lifeStatsOpen.value = !lifeStatsOpen.value }
 
+// ── 语音输入（本地 sherpa-ncnn，离线转写，100 字分片）──
+const listening = ref(false)
+const voiceHint = ref('')
+let voiceTimer: ReturnType<typeof setTimeout> | null = null
+
+function onVoiceResult(event: Event) {
+  const detail = (event as CustomEvent<{ type?: string; data?: string }>).detail ?? {}
+  const type = detail.type
+  const data = detail.data ?? ''
+  if (type === 'partial' || type === 'final') {
+    // 识别中先实时填入；final 时 1 秒后自动发送
+    text.value = data
+    autoGrow()
+    if (type === 'final' && data.trim()) {
+      voiceHint.value = '1 秒后发送…'
+      if (voiceTimer) clearTimeout(voiceTimer)
+      voiceTimer = setTimeout(() => {
+        voiceHint.value = ''
+        if (text.value.trim() === data.trim()) submit()
+      }, 1000)
+    }
+  } else if (type === 'begin' || type === 'ready') {
+    voiceHint.value = '正在聆听…'
+  } else if (type === 'end') {
+    listening.value = false
+    voiceHint.value = ''
+  } else if (type === 'error') {
+    listening.value = false
+    voiceHint.value = data === 'no_permission' ? '需要麦克风权限' : data === 'unavailable' ? '系统语音识别不可用' : data === 'model_missing' ? '离线语音模型缺失' : '语音识别失败'
+    setTimeout(() => { voiceHint.value = '' }, 2500)
+  }
+}
+
+function toggleVoice() {
+  if (!hasNative || !window.CoomiAndroid?.startVoiceInput) return
+  if (listening.value) {
+    listening.value = false
+    voiceHint.value = ''
+    window.CoomiAndroid.stopVoiceInput?.()
+    if (voiceTimer) { clearTimeout(voiceTimer); voiceTimer = null }
+    return
+  }
+  if (!window.CoomiAndroid.hasMicPermission?.()) {
+    window.CoomiAndroid.requestMicPermission?.()
+    voiceHint.value = '已申请麦克风权限，授予后点麦克风开始'
+    setTimeout(() => { voiceHint.value = '' }, 2500)
+    return
+  }
+  listening.value = true
+  window.CoomiAndroid.startVoiceInput()
+}
+
+
 function importFiles() { quickOpen.value = false; window.CoomiAndroid?.importFiles?.() }
 function authorizeFolder() { quickOpen.value = false; window.CoomiAndroid?.authorizeFolder?.() }
 function onTransferProgress(event: Event) {
@@ -137,6 +191,7 @@ onMounted(() => {
   window.addEventListener('coomi:files-imported', onFilesImported)
   window.addEventListener('coomi:file-exported', onFileExported)
   window.addEventListener('coomi:prefill-draft', onPrefillDraft)
+  window.addEventListener('coomi:voice-result', onVoiceResult as EventListener)
   loadDraft()
 })
 onBeforeUnmount(() => {
@@ -144,6 +199,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('coomi:files-imported', onFilesImported)
   window.removeEventListener('coomi:file-exported', onFileExported)
   window.removeEventListener('coomi:prefill-draft', onPrefillDraft)
+  window.removeEventListener('coomi:voice-result', onVoiceResult as EventListener)
+  if (voiceTimer) { clearTimeout(voiceTimer); voiceTimer = null }
   saveDraft()
 })
 
@@ -202,6 +259,17 @@ watch(text, () => {
         <button class="qchip file" @click="importFiles"><CoomiIcon name="fileRead" :size="15" />选择文件</button>
         <button class="qchip file" @click="authorizeFolder"><CoomiIcon name="folder" :size="15" />授权目录</button>
       </div>
+      <p class="qhead">语音</p>
+      <label class="readaloud-row">
+        <span>自动朗读回复</span>
+        <button
+          class="switch"
+          :class="{ on: readAloud }"
+          role="switch"
+          :aria-checked="readAloud"
+          @click="setReadAloud(!readAloud)"
+        ><i /></button>
+      </label>
       <div class="slash-list">
         <button v-for="c in SLASH_COMMANDS" :key="c.name" class="slash-item" @click="insertSlash(c.name)">
           <code>{{ c.name }}</code><span>{{ c.desc }}</span>
@@ -227,6 +295,10 @@ watch(text, () => {
           </svg>
         </div>
         <div class="life-stats-grid"><span>当前模式<strong>数字生命</strong></span><span>推理档位<strong>{{ REASONING_EFFORTS.find(i => i.value === config.reasoningEffort)?.label }}</strong></span><span>会话状态<strong>{{ session.isBusy ? '运行中' : '待命' }}</strong></span><span>动态流<strong>已连接</strong></span></div>
+      </div>
+      <div v-if="voiceHint" class="voice-hint">
+        <CoomiIcon :name="listening ? 'mic' : 'alert'" :size="13" />
+        <span>{{ voiceHint }}</span>
       </div>
       <div class="input-clip">
         <textarea
@@ -256,6 +328,17 @@ watch(text, () => {
         </button>
 
         <span class="spacer" />
+
+        <button
+          v-if="hasNative"
+          class="act"
+          :class="{ 'mic-on': listening }"
+          :aria-label="listening ? '停止语音输入' : '语音输入'"
+          title="语音输入"
+          @click="toggleVoice"
+        >
+          <CoomiIcon name="mic" :size="21" />
+        </button>
 
         <button class="act" aria-label="快捷指令" @click="toggleQuick">
           <CoomiIcon name="plusCircle" :size="21" />
@@ -421,4 +504,32 @@ watch(text, () => {
 .slash-item code { font-family: inherit; font-size: 13.5px; font-weight: 700; color: var(--blue); }
 .slash-item span { font-size: 12.5px; color: var(--text-2); }
 .slash-item:active { background: var(--blue-soft); }
+.act.mic-on { background: var(--blue-soft); color: var(--blue); }
+
+.voice-hint {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 2px 5px; padding: 5px 10px;
+  border-radius: var(--r-pill);
+  background: var(--blue-soft); color: var(--blue);
+  font-size: 12px; animation: coomi-cascade .16s ease both;
+}
+
+.readaloud-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 8px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--fill); font-size: 13px; color: var(--text-2);
+}
+.switch {
+  position: relative; width: 38px; height: 22px; flex-shrink: 0;
+  border: 0; border-radius: 999px; background: var(--border-strong);
+  transition: background .16s; cursor: pointer;
+}
+.switch i {
+  position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+  border-radius: 50%; background: #fff; transition: left .16s;
+}
+.switch.on { background: var(--blue); }
+.switch.on i { left: 19px; }
+
 </style>

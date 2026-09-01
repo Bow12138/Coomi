@@ -7,11 +7,12 @@
  * 新段落出现时自己做一次 8px 上浮。整条消息整体重排会闪，切块之后不会。
  * marked 的调用同时被 60ms 节流，流式期间不会一秒解析几十次 markdown。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { AssistantMessage, UserMessage } from '@/stores/viewModel'
 import { useSessionStore } from '@/stores/session'
 import { renderMarkdown } from '@/utils/markdown'
 import CoomiIcon from './CoomiIcon.vue'
+import { readAloud } from '@/stores/voice'
 import FileInline from './FileInline.vue'
 
 const props = defineProps<{ msg: AssistantMessage | UserMessage }>()
@@ -133,6 +134,60 @@ async function copyAll() {
   copied.value = true
   setTimeout(() => { copied.value = false }, 1400)
 }
+
+// ── 朗读回复（只读助手回复；自动朗读默认关闭，可手动逐条朗读）──
+const speaking = ref(false)
+const voiceTip = ref('')
+
+function speakNow(text: string) {
+  if (!window.CoomiAndroid?.speak) return
+  window.CoomiAndroid.stopSpeaking?.()
+  window.CoomiAndroid.speak(text)
+  speaking.value = true
+}
+
+function toggleSpeak() {
+  if (speaking.value) {
+    speaking.value = false
+    window.CoomiAndroid?.stopSpeaking?.()
+    return
+  }
+  speakNow(props.msg.content)
+}
+
+// 监听原生 TTS 事件：成功结束复位按钮；失败提示并复位。
+function onVoiceEvent(event: Event) {
+  const detail = (event as CustomEvent<{ type?: string; data?: string }>).detail ?? {}
+  const type = detail.type
+  const data = detail.data ?? ''
+  if (type === 'tts_done') {
+    speaking.value = false
+    return
+  }
+  if (type === 'tts_error') {
+    speaking.value = false
+    const msg =
+      data === 'no_language' ? '系统没有可用的语音数据，请在设置中下载语音包'
+      : data === 'init_failed' ? '语音引擎初始化失败，请检查系统 TTS 设置'
+      : data === 'tts_not_ready' ? '语音引擎尚未就绪，请稍后重试'
+      : data === 'speak_failed' ? '朗读失败，请重试'
+      : '朗读失败：' + data
+    voiceTip.value = msg
+    setTimeout(() => { voiceTip.value = '' }, 3000)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('coomi:voice-result', onVoiceEvent)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('coomi:voice-result', onVoiceEvent)
+})
+
+// 流式回复结束且自动朗读开启时，自动朗读该条回复。
+watch(streaming, (v) => {
+  if (!v && readAloud.value && props.msg.kind === 'assistant') speakNow(props.msg.content)
+})
 </script>
 
 <template>
@@ -156,11 +211,16 @@ async function copyAll() {
     <div v-if="isLife" class="life-tag"><CoomiIcon name="lifeRings" :size="12" /><span>生命体</span></div>
     <div v-for="(h, i) in blocks" :key="i" class="md blk cascade" v-html="h" />
     <FileInline v-if="filePaths.length" :paths="filePaths" />
+    <div v-if="voiceTip" class="voice-tip">{{ voiceTip }}</div>
     <span v-if="streaming" class="stream-caret" />
     <div v-if="!streaming" class="acts">
       <button class="act" @click="copyAll">
         <CoomiIcon :name="copied ? 'check' : 'copy'" :size="15" />
         <span>{{ copied ? '已复制' : '复制' }}</span>
+      </button>
+      <button class="act" @click="toggleSpeak">
+        <CoomiIcon :name="speaking ? 'stop' : 'volume'" :size="15" />
+        <span>{{ speaking ? '停止' : '朗读' }}</span>
       </button>
       <button v-if="isLastAssistant" class="act" @click="undoAssistant">
         <CoomiIcon name="arrowLeft" :size="15" />
@@ -212,5 +272,12 @@ async function copyAll() {
   font-size: 12.5px; color: var(--text-3);
 }
 .act:active { background: var(--fill); color: var(--blue); }
+.voice-tip {
+  display: inline-block; margin: 0 0 6px 2px; padding: 3px 10px;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--orange) 14%, var(--bg));
+  color: var(--orange); font-size: 12px; font-weight: 550;
+}
+
 </style>
 

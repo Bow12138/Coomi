@@ -21,6 +21,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -338,6 +339,20 @@
             android:name="com.sec.android.support.multiwindow"
             android:value="true" />
 
-    </application>
+            <!-- AI 屏幕操控：无障碍通道（Shizuku 不可用时兜底）。 -->
+        <service
+            android:name="app.coomi.CoomiAccessibilityService"
+            android:exported="false"
+            android:label="@string/coomi_accessibility_description"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/coomi_accessibility_config" />
+        </service>
+
+</application>
 
 </manifest>
