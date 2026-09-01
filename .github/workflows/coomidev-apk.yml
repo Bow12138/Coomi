@@ -148,8 +148,8 @@ jobs:
             "https://github.com/k2-fsa/sherpa-ncnn/releases/download/v2.1.15/sherpa-ncnn-v2.1.15-android.tar.bz2"
           mkdir -p /tmp/sherpa-android
           tar -xjf /tmp/sherpa-android.tar.bz2 -C /tmp/sherpa-android
-          SHERPA_SO="$(find /tmp/sherpa-android -type f -name 'libsherpa-ncnn-jni.so' | head -n 1)"
-          NCNN_SO="$(find /tmp/sherpa-android -type f -name 'libncnn.so' | head -n 1)"
+          SHERPA_SO="$(find /tmp/sherpa-android -path '*/jniLibs/arm64-v8a/libsherpa-ncnn-jni.so' | head -n 1)"
+          NCNN_SO="$(find /tmp/sherpa-android -path '*/jniLibs/arm64-v8a/libncnn.so' | head -n 1)"
           test -n "$SHERPA_SO" && test -n "$NCNN_SO"
           echo "b029ace14714523d8b701df11dd66f76c2f6c1213cbf8b0494c741c2a9f0612b  $SHERPA_SO" | sha256sum -c -
           echo "6f2a42d3acb6a5dd1677e458763bb45854d92efe036fd641a7cf5718d56c93d1  $NCNN_SO" | sha256sum -c -
