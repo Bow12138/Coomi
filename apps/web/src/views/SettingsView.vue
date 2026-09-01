@@ -143,20 +143,43 @@ const screenLog = ref('')
 
 function refreshScreenStatus() {
   if (!hasNative) return
-  const shizuku = window.CoomiAndroid?.shizukuAvailable?.() ? '已授权' : '未授权'
+  const st = window.CoomiAndroid?.shizukuStatus?.() ?? 'service_down'
+  const shizuku = st === 'granted' ? '已授权' : st === 'not_permitted' ? '已连接未授权' : '服务未运行'
   const a11y = window.CoomiAndroid?.accessibilityEnabled?.() ? '已开启' : '未开启'
   screenStatus.value = `Shizuku：${shizuku} · 无障碍：${a11y}`
+  if (st === 'service_down') {
+    screenLog.value = '提示：Shizuku 服务未运行。请打开 Shizuku App 点「启动」（无线调试/ADB 方式），再回来刷新。'
+  } else if (st === 'not_permitted') {
+    screenLog.value = '提示：Shizuku 已连接，点击「Shizuku 授权」授予 Anna 权限。'
+  } else {
+    screenLog.value = ''
+  }
 }
 
 function requestShizuku() {
   if (!hasNative) return
+  const st = window.CoomiAndroid?.shizukuStatus?.() ?? 'service_down'
+  if (st === 'service_down') {
+    screenLog.value = 'Shizuku 服务未运行：请先打开 Shizuku App 启动服务（无线调试或 ADB），再回来授权。'
+    return
+  }
   window.CoomiAndroid?.requestShizukuPermission?.()
-  setTimeout(refreshScreenStatus, 1200)
+  setTimeout(refreshScreenStatus, 1500)
 }
 
 function openAccessibility() {
   if (!hasNative) return
   window.CoomiAndroid?.openAccessibilitySettings?.()
+}
+
+/** 无障碍操作测试：模拟「返回」，验证操作链路（不依赖 Shizuku）。 */
+function doA11yTestBack() {
+  if (!hasNative) return
+  const r = window.CoomiAndroid?.accessibilityAction?.('back', 0, 0, 0, 0, '') ?? ''
+  try {
+    const j = JSON.parse(r)
+    screenLog.value = j.ok ? '无障碍「返回」执行成功 ✅ 操作链路可用' : '无障碍操作失败：' + (j.error ?? 'unknown')
+  } catch { screenLog.value = '无障碍操作失败：' + r }
 }
 
 function doScreenCapture() {
@@ -338,6 +361,7 @@ function doDumpHierarchy() {
           <button class="sc-btn" @click="openAccessibility">无障碍设置</button>
           <button class="sc-btn" @click="doScreenCapture">截图</button>
           <button class="sc-btn" @click="doDumpHierarchy">控件树</button>
+          <button class="sc-btn" @click="doA11yTestBack">无障碍返回测试</button>
         </div>
         <div v-if="screenLog" class="sc-log">{{ screenLog }}</div>
       </div>

@@ -58,6 +58,8 @@ interface Window {
     accessibilityDump?(): string
     /** 打开系统「无障碍」设置页。 */
     openAccessibilitySettings?(): void
+    /** Shizuku 授权状态诊断：service_down / not_permitted / granted。 */
+    shizukuStatus?(): string
   }
 }
 

@@ -16,7 +16,12 @@ import com.k2fsa.sherpa.ncnn.SherpaNcnn;
 
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.PrintWriter;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
@@ -38,6 +43,10 @@ import java.util.Locale;
  * <p>Both channels are driven from the Web frontend through
  * {@code window.CoomiAndroid.*} bridge methods and report back via
  * {@code window.__coomiVoiceResult(...)}.</p>
+ *
+ * <p>Robustness: native crashes are guarded by CPU-only inference (no Vulkan),
+ * recognizer readiness checks, and a crash log at {@code filesDir/coomi_voice_crash.log}
+ * for on-device diagnosis without logcat access.</p>
  */
 public final class CoomiVoiceManager {
 
@@ -62,6 +71,7 @@ public final class CoomiVoiceManager {
     private AudioRecord audioRecord;
     private Thread audioThread;
     private volatile boolean listening;
+    private volatile boolean loading;
     private String partialText = "";
     private String finalizedText = "";
     private long lastDecodeAt;
@@ -72,6 +82,8 @@ public final class CoomiVoiceManager {
     private boolean ttsInitFailed;
     private int ttsEngineIndex = -1;
     private List<TextToSpeech.EngineInfo> ttsEngines = new ArrayList<>();
+    /** 挂起朗读文本：onInit 成功后再朗读（替代固定延迟，杜绝「初始化未完成就朗读」）。 */
+    private String pendingSpeech;
 
     /** Bridge to the active WebView, set by CoomiActivity on create. */
     private static java.util.function.Consumer<String> sJsCallback;
@@ -94,23 +106,60 @@ public final class CoomiVoiceManager {
         return listening;
     }
 
+    // ==================== 崩溃日志（无需 logcat 即可诊断） ====================
+
+    private void crash(String what, Throwable t) {
+        try {
+            File f = new File(context.getFilesDir(), "coomi_voice_crash.log");
+            try (PrintWriter w = new PrintWriter(new FileWriter(f, true))) {
+                w.println("[" + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                    .format(new Date()) + "] " + what);
+                if (t != null) t.printStackTrace(w);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     // ==================== STT：sherpa-ncnn 本地离线识别 ====================
 
     /** Starts streaming voice recognition via local sherpa-ncnn (offline). */
     public void startRecognition() {
-        if (listening) return;
+        if (listening || loading) return;
         if (!hasRecordPermission()) {
             deliver("error", "no_permission");
             return;
         }
-        try {
-            if (recognizer == null) {
-                recognizer = createRecognizer();
-                if (recognizer == null) {
+        if (recognizer == null) {
+            // 模型加载放后台线程：避免 WebView 桥线程阻塞（22MB 模型加载耗时）。
+            loading = true;
+            deliver("loading", "正在加载离线语音模型…");
+            new Thread(() -> {
+                try {
+                    SherpaNcnn r = createRecognizer();
+                    if (r == null || !r.isReady()) {
+                        loading = false;
+                        if (r != null) { try { r.delete(); } catch (Exception ignored) {} }
+                        deliver("error", "model_missing");
+                        return;
+                    }
+                    recognizer = r;
+                    loading = false;
+                    mainHandler.post(this::beginCapture);
+                } catch (Throwable t) {
+                    crash("createRecognizer crashed", t);
+                    loading = false;
                     deliver("error", "model_missing");
-                    return;
                 }
-            }
+            }, "sherpa-load").start();
+            return;
+        }
+        beginCapture();
+    }
+
+    /** 识别器就绪后真正开始录音。 */
+    private void beginCapture() {
+        if (listening) return;
+        try {
             partialText = "";
             finalizedText = "";
             listening = true;
@@ -118,10 +167,10 @@ public final class CoomiVoiceManager {
             deliver("ready", "");
             audioThread = new Thread(this::audioLoop, "sherpa-stt");
             audioThread.start();
-        } catch (Exception e) {
-            Log.e(TAG, "startRecognition failed", e);
+        } catch (Throwable t) {
+            crash("startAudioCapture crashed", t);
             listening = false;
-            deliver("error", e.getMessage() == null ? "start_failed" : e.getMessage());
+            deliver("error", t.getMessage() == null ? "start_failed" : t.getMessage());
         }
     }
 
@@ -146,8 +195,8 @@ public final class CoomiVoiceManager {
                 } else {
                     deliver("error", "no_match");
                 }
-            } catch (Exception e) {
-                Log.e(TAG, "final decode failed", e);
+            } catch (Throwable t) {
+                crash("final decode crashed", t);
                 deliver("error", "decode_failed");
             }
         }
@@ -168,7 +217,7 @@ public final class CoomiVoiceManager {
                 MODEL_DIR + "/joiner_jit_trace-pnnx.ncnn.param",
                 MODEL_DIR + "/joiner_jit_trace-pnnx.ncnn.bin",
                 MODEL_DIR + "/tokens.txt",
-                2, true);
+                2, false /* useGPU=false: 内置 libncnn 为纯 CPU 版，GPU 探测会导致 native 崩溃 */);
             SherpaNcnn.FeatureExtractorConfig feat =
                 new SherpaNcnn.FeatureExtractorConfig(SAMPLE_RATE, FEATURE_DIM);
             SherpaNcnn.DecoderConfig decoder =
@@ -176,8 +225,8 @@ public final class CoomiVoiceManager {
             SherpaNcnn.RecognizerConfig config =
                 new SherpaNcnn.RecognizerConfig(feat, model, decoder);
             return new SherpaNcnn(config, context.getAssets());
-        } catch (Exception e) {
-            Log.e(TAG, "createRecognizer failed (models bundled?)", e);
+        } catch (Throwable t) {
+            crash("createRecognizer failed", t);
             return null;
         }
     }
@@ -185,6 +234,7 @@ public final class CoomiVoiceManager {
     private void startAudioCapture() {
         int minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        if (minBuf <= 0) throw new IllegalStateException("audio_buffer_unsupported");
         int bufSize = Math.max(minBuf, SAMPLE_RATE * 2 * AUDIO_BUFFER_MS / 1000);
         audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC,
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
@@ -194,6 +244,9 @@ public final class CoomiVoiceManager {
             throw new IllegalStateException("audio_record_init_failed");
         }
         audioRecord.startRecording();
+        if (audioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+            throw new IllegalStateException("audio_record_start_failed");
+        }
     }
 
     private void stopAudioCapture() {
@@ -212,18 +265,27 @@ public final class CoomiVoiceManager {
 
     /** PCM 16-bit mono loop: feed sherpa, decode periodically, chunk at 100 chars. */
     private void audioLoop() {
-        if (audioRecord == null) return;
+        if (audioRecord == null || recognizer == null || !recognizer.isReady()) {
+            mainHandler.post(() -> deliver("error", "recognizer_not_ready"));
+            return;
+        }
         short[] pcm = new short[SAMPLE_RATE * AUDIO_BUFFER_MS / 1000];
         lastDecodeAt = System.currentTimeMillis();
         while (listening && audioRecord != null) {
-            int read = audioRecord.read(pcm, 0, pcm.length);
+            int read;
+            try {
+                read = audioRecord.read(pcm, 0, pcm.length);
+            } catch (Throwable t) {
+                crash("audioRecord.read crashed", t);
+                break;
+            }
             if (read <= 0) continue;
             float[] samples = new float[read];
             for (int i = 0; i < read; i++) samples[i] = pcm[i] / 32768f;
             try {
                 recognizer.acceptSamples(samples);
-            } catch (Exception e) {
-                Log.e(TAG, "acceptSamples failed", e);
+            } catch (Throwable t) {
+                crash("acceptSamples crashed", t);
                 break;
             }
             long now = System.currentTimeMillis();
@@ -234,19 +296,17 @@ public final class CoomiVoiceManager {
                     String text = recognizer.getText();
                     if (text != null && !text.equals(partialText)) {
                         partialText = text;
-                        // 100 字分片：累积文本每满 CHUNK_SIZE 上抛一次
+                        deliver("partial", partialText);
+                        // 100 字分片：累积文本每满 CHUNK_SIZE 上抛一次（语义完整分段）
                         if (partialText.length() - finalizedText.length() >= CHUNK_SIZE) {
                             finalizedText = partialText;
-                            deliver("partial", partialText);
-                        } else {
-                            deliver("partial", partialText);
                         }
                     }
                     if (recognizer.isEndpoint()) {
                         break;
                     }
-                } catch (Exception e) {
-                    Log.e(TAG, "decode failed", e);
+                } catch (Throwable t) {
+                    crash("decode crashed", t);
                 }
             }
         }
@@ -255,15 +315,18 @@ public final class CoomiVoiceManager {
             listening = false;
             mainHandler.post(() -> {
                 try {
-                    if (recognizer != null) {
+                    if (recognizer != null && recognizer.isReady()) {
                         recognizer.inputFinished();
                         recognizer.decode();
                         String text = recognizer.getText();
                         if (text != null && !text.isEmpty()) deliver("final", text);
                         else if (!finalizedText.isEmpty()) deliver("final", finalizedText);
                         else deliver("error", "no_match");
+                    } else {
+                        deliver("error", "recognizer_not_ready");
                     }
-                } catch (Exception e) {
+                } catch (Throwable t) {
+                    crash("finalize crashed", t);
                     deliver("error", "decode_failed");
                 }
             });
@@ -275,36 +338,44 @@ public final class CoomiVoiceManager {
     /** Reads a reply out loud via system TTS (SIMPLE_TTS). */
     public void speak(String text) {
         if (text == null || text.isEmpty()) return;
+        pendingSpeech = text;
         if (tts == null) {
-            initTts();
-            mainHandler.postDelayed(() -> speakNow(text), 1000);
+            initTts();          // onInit 成功后自动朗读 pendingSpeech
             return;
         }
+        if (!ttsReady) return;  // 等待 onInit 完成（挂起队列自动续读）
         speakNow(text);
     }
 
     public void stopSpeaking() {
+        pendingSpeech = null;
         if (tts != null && ttsReady) tts.stop();
     }
 
     private void speakNow(String text) {
         if (tts == null || !ttsReady) {
-            // 步骤 1：initialized 失败 → 重试初始化
+            // 步骤 1：initialized 失败 → 重试初始化（挂起队列，不丢文本）
             if (ttsInitFailed) {
                 ttsInitFailed = false;
                 initTts();
-                mainHandler.postDelayed(() -> speakNow(text), 1000);
             } else {
                 deliver("tts_error", "tts_not_ready");
             }
             return;
         }
         String utteranceId = "coomi-" + System.currentTimeMillis();
-        int result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
+        int result;
+        try {
+            result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
+        } catch (Throwable t) {
+            crash("tts.speak crashed", t);
+            deliver("tts_error", "speak_failed");
+            return;
+        }
         if (result == TextToSpeech.ERROR) {
             // 步骤 2/4：引擎合成失败 → 尝试切换引擎，失败则上报（前端降级纯文字）
             if (tryNextEngine()) {
-                mainHandler.postDelayed(() -> speakNow(text), 1200);
+                deliver("tts_engine_switched", "");
             } else {
                 deliver("tts_error", "speak_failed");
             }
@@ -314,8 +385,8 @@ public final class CoomiVoiceManager {
     private void initTts() {
         if (tts != null) return;
         if (ttsEngines.isEmpty()) {
-            // 引擎枚举：compileSdk 36 只有 API 34+ 的实例方法 getEngines()。
-            // 用一个临时实例探测；API 24-33 会抛 NoSuchMethodError，捕获后走默认引擎。
+            // 引擎枚举：compileSdk 36 下 getEngines() 是 API 34+ 的实例方法，
+            // 用临时实例探测；低版本抛 NoSuchMethodError（Error）时捕获并回落默认引擎。
             TextToSpeech probe = null;
             try {
                 probe = new TextToSpeech(context, null);
@@ -323,8 +394,8 @@ public final class CoomiVoiceManager {
                 if (list != null && !list.isEmpty()) {
                     ttsEngines = new ArrayList<>(list);
                 }
-            } catch (Exception e) {
-                Log.w(TAG, "enumerate tts engines failed (default engine will be used)", e);
+            } catch (Throwable t) {
+                Log.w(TAG, "enumerate tts engines failed (default engine will be used)", t);
             } finally {
                 if (probe != null) {
                     try { probe.shutdown(); } catch (Exception ignored) { }
@@ -339,9 +410,14 @@ public final class CoomiVoiceManager {
                 tts = new TextToSpeech(context, ttsInitListener, engine);
             } else {
                 tts = new TextToSpeech(context, ttsInitListener);
+                if (!ttsEngines.isEmpty()) {
+                    // 所有可用引擎都被识别为问题引擎（如只有 oplus）：
+                    // 仍尝试默认引擎，但提示用户可能出现无声。
+                    deliver("tts_warn", "current_engine_may_fail");
+                }
             }
-        } catch (Exception e) {
-            Log.e(TAG, "TextToSpeech constructor failed", e);
+        } catch (Throwable t) {
+            crash("TextToSpeech constructor failed", t);
             tts = null;
             ttsInitFailed = true;
             deliver("tts_error", "init_failed");
@@ -370,7 +446,10 @@ public final class CoomiVoiceManager {
         if (ok) {
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                 @Override public void onStart(String utteranceId) { deliver("tts_start", ""); }
-                @Override public void onDone(String utteranceId) { deliver("tts_done", ""); }
+                @Override public void onDone(String utteranceId) {
+                    deliver("tts_done", "");
+                    // 多段朗读：队列里还有文本继续读（调用方按 100 字分段逐段调用）。
+                }
                 @Override public void onError(String utteranceId) {
                     // 步骤 3：onDone 未正常返回（合成报错）→ 切换引擎
                     if (tryNextEngine()) {
@@ -381,6 +460,12 @@ public final class CoomiVoiceManager {
                 }
             });
             deliver("tts_ready", "");
+            // 挂起队列：初始化完成自动朗读（替代固定延迟）。
+            if (pendingSpeech != null) {
+                String t = pendingSpeech;
+                pendingSpeech = null;
+                speakNow(t);
+            }
         } else {
             ttsReady = false;
             deliver("tts_error", "no_language");
@@ -393,7 +478,7 @@ public final class CoomiVoiceManager {
             int result = tts.setLanguage(locale);
             return result != TextToSpeech.LANG_MISSING_DATA
                 && result != TextToSpeech.LANG_NOT_SUPPORTED;
-        } catch (Exception ignored) {
+        } catch (Throwable ignored) {
             return false;
         }
     }
@@ -450,7 +535,7 @@ public final class CoomiVoiceManager {
         cancelRecognition();
         stopSpeaking();
         if (recognizer != null) {
-            try { recognizer.delete(); } catch (Exception ignored) {}
+            try { recognizer.delete(); } catch (Throwable ignored) {}
             recognizer = null;
         }
         if (tts != null) {

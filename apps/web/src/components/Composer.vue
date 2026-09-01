@@ -130,6 +130,8 @@ function onVoiceResult(event: Event) {
     }
   } else if (type === 'begin' || type === 'ready') {
     voiceHint.value = '正在聆听…'
+  } else if (type === 'loading') {
+    voiceHint.value = data || '正在加载语音模型…'
   } else if (type === 'end') {
     listening.value = false
     voiceHint.value = ''

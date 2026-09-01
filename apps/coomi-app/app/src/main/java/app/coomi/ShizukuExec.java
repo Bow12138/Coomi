@@ -44,13 +44,35 @@ public final class ShizukuExec {
         this.context = context.getApplicationContext();
     }
 
-    /** Shizuku 已连接且已授权。 */
+    /** Shizuku 服务是否在运行（binder 存活）。 */
+    public boolean isServiceRunning() {
+        try {
+            return Shizuku.pingBinder();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Shizuku 是否已授权（服务在运行 + 权限已授予）。 */
     public boolean isAvailable() {
         try {
             return Shizuku.pingBinder()
                 && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
-        } catch (Exception e) {
+        } catch (Throwable t) {
             return false;
+        }
+    }
+
+    /** 授权状态诊断：返回 service_down / not_permitted / granted。 */
+    public String status() {
+        try {
+            if (!Shizuku.pingBinder()) return "service_down";
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                return "not_permitted";
+            }
+            return "granted";
+        } catch (Throwable t) {
+            return "service_down";
         }
     }
 
@@ -72,7 +94,7 @@ public final class ShizukuExec {
             return "{\"ok\":false,\"error\":\"empty_command\"}";
         }
         if (!isAvailable()) {
-            return "{\"ok\":false,\"error\":\"shizuku_unavailable\"}";
+            return "{\"ok\":false,\"error\":\"" + status() + "\"}";
         }
         String cmd = command.trim();
         boolean allowed = false;

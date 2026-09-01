@@ -532,6 +532,12 @@ public class CoomiActivity extends Activity {
             return mShizukuExec != null && mShizukuExec.isAvailable();
         }
 
+        /** Shizuku 授权状态诊断：service_down / not_permitted / granted。 */
+        @JavascriptInterface
+        public String shizukuStatus() {
+            return mShizukuExec != null ? mShizukuExec.status() : "service_down";
+        }
+
         /** 请求 Shizuku 授权。 */
         @JavascriptInterface
         public void requestShizukuPermission() {

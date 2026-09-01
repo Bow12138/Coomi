@@ -175,6 +175,10 @@ function onVoiceEvent(event: Event) {
     voiceTip.value = msg
     setTimeout(() => { voiceTip.value = '' }, 3000)
   }
+  if (type === 'tts_warn' && data === 'current_engine_may_fail') {
+    voiceTip.value = '当前 TTS 引擎可能无声（OPPO 系），请在系统设置中切换语音引擎'
+    setTimeout(() => { voiceTip.value = '' }, 4000)
+  }
 }
 
 onMounted(() => {
